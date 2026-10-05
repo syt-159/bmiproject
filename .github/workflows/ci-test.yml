@@ -1,0 +1,158 @@
+name: BMI_CI
+
+env:
+  AZURE_WEBAPP_NAME: bmi-lab
+  AZURE_WEBAPP_PACKAGE_PATH: 'publish/myapp'
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v5
+
+    # ==============================
+    # DEBUG 1 - Show repository files
+    # ==============================
+    - name: DEBUG - Show repository files
+      shell: pwsh
+      run: |
+        Write-Host "========================================"
+        Write-Host "Current directory:"
+        Get-Location
+
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "Files in repository root:"
+        Get-ChildItem
+
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "All .csproj files:"
+        Get-ChildItem -Recurse -Filter *.csproj | Select-Object FullName
+
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "Checking Unit Test project:"
+        if (Test-Path "bmiUnitTestProject/bmiUnitTestProject.csproj") {
+          Write-Host "SUCCESS: bmiUnitTestProject/bmiUnitTestProject.csproj EXISTS"
+        }
+        else {
+          Write-Host "ERROR: bmiUnitTestProject/bmiUnitTestProject.csproj DOES NOT EXIST"
+          exit 1
+        }
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+
+    # ==============================
+    # BUILD
+    # ==============================
+    - name: Build for Release
+      run: dotnet build --configuration Release
+
+    # ==============================
+    # DEBUG 2 - Check Release build output
+    # ==============================
+    - name: DEBUG - Check Release build output
+      shell: pwsh
+      run: |
+        Write-Host "========================================"
+        Write-Host "Checking build output..."
+
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "Release directories:"
+        Get-ChildItem -Recurse -Directory |
+          Where-Object { $_.FullName -match "\\bin\\Release" } |
+          Select-Object FullName
+
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "DLL files produced by Release build:"
+        Get-ChildItem -Recurse -Filter *.dll |
+          Where-Object { $_.FullName -match "\\bin\\Release\\" } |
+          Select-Object FullName
+
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "Checking main BMI application:"
+        if (Test-Path "bmi2021/bin/Release/net10.0/bmi2026.dll") {
+          Write-Host "SUCCESS: bmi2026.dll was built"
+        }
+        else {
+          Write-Host "WARNING: bmi2026.dll not found at expected location"
+        }
+
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "Checking Unit Test DLL:"
+        if (Test-Path "bmiUnitTestProject/bin/Release/net10.0/bmiUnitTestProject.dll") {
+          Write-Host "SUCCESS: bmiUnitTestProject.dll was built"
+        }
+        else {
+          Write-Host "WARNING: bmiUnitTestProject.dll not found at expected location"
+        }
+
+    # ==============================
+    # UNIT TEST
+    # ==============================
+    - name: Run unit tests
+      run: dotnet test bmiUnitTestProject/bmiUnitTestProject.csproj --no-restore --collect "Code coverage" -l:trx
+
+    # ==============================
+    # DEBUG 3: Test 后找 TRX
+    # ==============================
+    - name: DEBUG - Check test results
+      if: always()
+      shell: pwsh
+      run: |
+        Write-Host "========================================"
+        Write-Host "Looking for TRX files..."
+
+        $trxFiles = Get-ChildItem -Recurse -Filter *.trx
+
+        if ($trxFiles) {
+          Write-Host "SUCCESS: TRX file(s) found:"
+          $trxFiles | Select-Object FullName, Length, LastWriteTime
+        }
+        else {
+          Write-Host "ERROR: No TRX files found anywhere in repository"
+        }
+
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "TestResults directories:"
+        Get-ChildItem -Recurse -Directory |
+          Where-Object { $_.Name -eq "TestResults" } |
+          Select-Object FullName
+
+    - name: Publish Unit Test Results
+      uses: dorny/test-reporter@v3
+      if: always()
+      with:
+        artifact: ''
+        name: MS Tests
+        path: '**.trx'
+        reporter: 'dotnet-trx'
+
+    # ==============================
+    # PUBLISH
+    # ==============================
+    - name: Publish
+      run: dotnet publish -c Release --property:PublishDir=${{ env.AZURE_WEBAPP_PACKAGE_PATH }}
+
+    # ==============================
+    # DEPLOY
+    # ==============================
+    - name: Run Azure webapp deploy action using publish profile credentials
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+        package: 'bmi2021/${{ env.AZURE_WEBAPP_PACKAGE_PATH }}'
